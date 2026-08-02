@@ -1,0 +1,24 @@
+name: Poll Booking.com inbox
+
+on:
+  schedule:
+    # Every 5 minutes. GitHub's scheduler is best-effort and can lag under load,
+    # but this keeps Vercel on the free Hobby plan (whose own Cron only fires daily).
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call poll endpoint
+        run: |
+          status=$(curl -sS -o response.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.DEPLOYMENT_URL }}/api/cron/poll-booking-com")
+          echo "HTTP status: $status"
+          cat response.json
+          if [ "$status" -ge 300 ]; then
+            echo "Poll request failed"
+            exit 1
+          fi
