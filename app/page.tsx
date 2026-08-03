@@ -4,8 +4,7 @@ export default function Home() {
       <h1>Booking.com Automation</h1>
       <p>This is a backend service. There is no UI here.</p>
       <ul>
-        <li>GET /api/cron/poll-booking-com - polled every 5 min by GitHub Actions</li>
-        <li>POST /api/webhooks/stripe - Stripe charge.succeeded webhook</li>
+        <li>GET /api/cron/poll-booking-com - polled every 5 min by GitHub Actions; polls Gmail, then processes any pending record marked &quot;Ready to Create Trip&quot;</li>
       </ul>
     </main>
   );

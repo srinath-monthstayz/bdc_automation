@@ -86,8 +86,7 @@ async function processOne(email: ParsedBookingEmail, log: RunLogger): Promise<vo
   });
 }
 
-export async function pollBookingComEmails(): Promise<ReturnType<RunLogger["summary"]>> {
-  const log = new RunLogger();
+export async function pollBookingComEmails(log: RunLogger): Promise<void> {
   const emails = await fetchNewBookingEmails();
   for (const email of emails) {
     try {
@@ -96,5 +95,4 @@ export async function pollBookingComEmails(): Promise<ReturnType<RunLogger["summ
       log.errored(email.subject, "unexpected error while processing", { error: String(err) });
     }
   }
-  return log.summary();
 }

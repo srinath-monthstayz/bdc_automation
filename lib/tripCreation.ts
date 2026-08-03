@@ -1,4 +1,3 @@
-import Stripe from "stripe";
 import {
   TABLES,
   PROPERTIES_FIELDS,
@@ -17,7 +16,6 @@ import {
 } from "./airtableClient";
 import { normalizePhone, isMalformedPhone } from "./phone";
 import { createAllDayBlock, getEvent } from "./googleCalendar";
-import { extractConfirmationCode } from "./stripeClient";
 import { RunLogger } from "./logger";
 
 const REQUIRED_PENDING_FIELDS: Array<{ key: string; label: string }> = [
@@ -28,18 +26,11 @@ const REQUIRED_PENDING_FIELDS: Array<{ key: string; label: string }> = [
   { key: PENDING_CHARGES_FIELDS.GUESTS, label: "Guests" },
   { key: PENDING_CHARGES_FIELDS.TOTAL_AMOUNT, label: "Total Amount" },
   { key: PENDING_CHARGES_FIELDS.PHONE_NUMBER, label: "Phone Number" },
+  { key: PENDING_CHARGES_FIELDS.ACTUAL_AMOUNT_PAID, label: "Actual Amount Paid" },
 ];
 
-async function findPendingChargeByCode(code: string): Promise<AirtableRecord | null> {
-  const matches = await listRecords(TABLES.PENDING_CHARGES, {
-    filterByFormula: `{${PENDING_CHARGES_FIELDS.CONFIRMATION_CODE}} = "${escapeFormulaString(code)}"`,
-    maxRecords: 1,
-  });
-  return matches[0] ?? null;
-}
-
-// Guards against a retried Stripe webhook delivery landing after a prior attempt
-// created the Master Trip but timed out before it could update the pending record's
+// Guards against two overlapping/retried poll runs landing after a prior attempt
+// created the Master Trip but died before it could update the pending record's
 // Status - without this, the retry would create a second, duplicate trip.
 async function findMasterTripByConfirmationCode(confirmationCode: string): Promise<AirtableRecord | null> {
   const matches = await listRecords(TABLES.MASTER_TRIPS, {
@@ -91,22 +82,12 @@ async function findOrCreateCrmContact(guestName: string, phone: string): Promise
   return { record: created, isNew: true };
 }
 
-export async function handleChargeSucceeded(charge: Stripe.Charge, log: RunLogger): Promise<void> {
-  const label = `stripe charge ${charge.id}`;
-  const confirmationCode = extractConfirmationCode(charge);
-  if (!confirmationCode) {
-    log.errored(label, "could not find a Booking.com confirmation code in the charge description/metadata - staff must add it and we cannot auto-retry a webhook delivery", { chargeId: charge.id });
-    return;
-  }
-
-  const pending = await findPendingChargeByCode(confirmationCode);
-  if (!pending) {
-    log.errored(label, "no 'Awaiting charge' pending record found for this confirmation code", { confirmationCode, chargeId: charge.id });
-    return;
-  }
+async function processOnePendingCharge(pending: AirtableRecord, log: RunLogger): Promise<void> {
+  const confirmationCode = String(pending.fields[PENDING_CHARGES_FIELDS.CONFIRMATION_CODE]);
+  const label = `pending charge ${confirmationCode}`;
 
   if (pending.fields[PENDING_CHARGES_FIELDS.STATUS] === CHOICES.PENDING_STATUS_CHARGED) {
-    log.skipped(label, "idempotent no-op: this pending record was already marked Charged - trip created", { confirmationCode, pendingRecordId: pending.id });
+    log.skipped(label, "idempotent no-op: already marked Charged - trip created", { confirmationCode, pendingRecordId: pending.id });
     return;
   }
 
@@ -115,7 +96,7 @@ export async function handleChargeSucceeded(charge: Stripe.Charge, log: RunLogge
     await updateRecordVerified(TABLES.PENDING_CHARGES, pending.id, {
       [PENDING_CHARGES_FIELDS.STATUS]: CHOICES.PENDING_STATUS_NEEDS_REVIEW,
     });
-    log.errored(label, `charge succeeded but the pending record is missing required fields - guest has been charged, complete the record manually then re-fire this webhook event: ${missing.join(", ")}`, {
+    log.errored(label, `marked "Ready to Create Trip" but missing required fields - complete the record and re-check the box: ${missing.join(", ")}`, {
       confirmationCode,
       pendingRecordId: pending.id,
       missing,
@@ -141,25 +122,21 @@ export async function handleChargeSucceeded(charge: Stripe.Charge, log: RunLogge
   const guests = Number(pending.fields[PENDING_CHARGES_FIELDS.GUESTS]);
   const totalAmount = Number(pending.fields[PENDING_CHARGES_FIELDS.TOTAL_AMOUNT]);
   const securityDeposit = pending.fields[PENDING_CHARGES_FIELDS.SECURITY_DEPOSIT];
-  const actualAmountPaid = charge.amount / 100; // Stripe's charged amount is ground truth for what the guest actually paid
-
-  if (charge.currency && charge.currency.toLowerCase() !== "thb") {
-    log.errored(label, `Stripe charge currency is "${charge.currency}", not THB - Actual Amount Paid was still recorded as amount/100, please verify manually`, { confirmationCode, currency: charge.currency });
-  }
+  const actualAmountPaid = Number(pending.fields[PENDING_CHARGES_FIELDS.ACTUAL_AMOUNT_PAID]);
 
   // Step 1: get-or-create the Master Trip. Keyed off Comments containing the
-  // confirmation code, so a retried webhook delivery never creates a second trip.
+  // confirmation code, so an overlapping/retried poll run never creates a second trip.
   let masterTrip = await findMasterTripByConfirmationCode(confirmationCode);
   let crmContactId: string | null = null;
   let crmContactIsNew = false;
   if (masterTrip) {
-    log.skipped(label, "Master Trip already exists for this confirmation code (retried delivery) - reusing it", { confirmationCode, masterTripId: masterTrip.id });
+    log.skipped(label, "Master Trip already exists for this confirmation code (retried run) - reusing it", { confirmationCode, masterTripId: masterTrip.id });
   } else {
     const { record: crmContact, isNew } = await findOrCreateCrmContact(guestName, phone);
     crmContactId = crmContact.id;
     crmContactIsNew = isNew;
 
-    const comments = `Booking.com confirmation: ${confirmationCode} | Arrival: ${arrivalDate} | Checkout: ${checkoutDate} | Stripe charge: ${charge.id}`;
+    const comments = `Booking.com confirmation: ${confirmationCode} | Arrival: ${arrivalDate} | Checkout: ${checkoutDate}`;
     masterTrip = await createRecordVerified(TABLES.MASTER_TRIPS, {
       [MASTER_TRIPS_FIELDS.PROPERTY]: [propertyId],
       [MASTER_TRIPS_FIELDS.BOOKING_CHANNEL]: CHOICES.BOOKING_CHANNEL_BOOKING_COM,
@@ -217,4 +194,20 @@ export async function handleChargeSucceeded(charge: Stripe.Charge, log: RunLogge
     crmContactIsNew,
     calendarEventId: eventId,
   });
+}
+
+// Called every 5 minutes, right after the Gmail poll. Picks up any pending record
+// staff have ticked "Ready to Create Trip" on (after filling in guest/dates/price and
+// collecting payment by whatever means) and turns it into a real trip + calendar block.
+export async function processReadyPendingCharges(log: RunLogger): Promise<void> {
+  const ready = await listRecords(TABLES.PENDING_CHARGES, {
+    filterByFormula: `AND({${PENDING_CHARGES_FIELDS.READY_TO_CREATE_TRIP}} = TRUE(), {${PENDING_CHARGES_FIELDS.STATUS}} != "${CHOICES.PENDING_STATUS_CHARGED}")`,
+  });
+  for (const pending of ready) {
+    try {
+      await processOnePendingCharge(pending, log);
+    } catch (err) {
+      log.errored(`pending charge ${pending.fields[PENDING_CHARGES_FIELDS.CONFIRMATION_CODE]}`, "unexpected error while processing", { error: String(err) });
+    }
+  }
 }

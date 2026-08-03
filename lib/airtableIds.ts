@@ -55,6 +55,7 @@ export const PENDING_CHARGES_FIELDS = {
   SECURITY_DEPOSIT: "fldLqo5HV25anbZ3g",
   ACTUAL_AMOUNT_PAID: "fldq384CrhQR6TChS",
   CALENDAR_EVENT_ID: "fldegoX5mtiVd0s5w",
+  READY_TO_CREATE_TRIP: "fldndF6zGFFHtxOdp",
 } as const;
 
 // singleSelect choice display names (Airtable's REST API writes selects by name, not by choice ID).
