@@ -5,18 +5,36 @@ import {
   MASTER_TRIPS_FIELDS,
   CHOICES,
 } from "./airtableIds";
-import { listRecords, createRecordVerified, escapeFormulaString } from "./airtableClient";
+import { listRecords, getRecord, createRecordVerified, escapeFormulaString, AirtableRecord } from "./airtableClient";
 import { fetchNewBookingEmails, markThreadProcessed, ParsedBookingEmail } from "./gmail";
 import { RunLogger } from "./logger";
 import { Deadline } from "./deadline";
 
 async function findPropertyByHotelId(hotelId: string) {
+  // Some hotel_ids genuinely cover more than a handful of units (confirmed live: one
+  // covers at least 6 Riviera Jomtien condos) - capping this low would silently drop
+  // real candidates instead of just being a defensive limit.
   const matches = await listRecords(TABLES.PROPERTIES, {
     filterByFormula: `{${PROPERTIES_FIELDS.HOTEL_ID}} = "${escapeFormulaString(hotelId)}"`,
-    maxRecords: 5,
+    maxRecords: 50,
     fields: [PROPERTIES_FIELDS.HOTEL_ID, PROPERTIES_FIELDS.GOOGLE_CALENDAR_ID, PROPERTIES_FIELDS.INTERNAL_LISTING_NAME],
   });
   return matches;
+}
+
+// The Internal Listing Name formula field occasionally comes back blank on a fresh
+// list/filter read (the same base-wide staleness issue that affects writes), which
+// otherwise leaves the Notes field showing raw record IDs twice - useless for staff
+// trying to pick the right unit. One short retry per candidate is cheap since this
+// only runs on the rare ambiguous-hotel_id path.
+async function describeProperty(record: AirtableRecord): Promise<string> {
+  let name = record.fields[PROPERTIES_FIELDS.INTERNAL_LISTING_NAME];
+  if (!name) {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const refetched = await getRecord(TABLES.PROPERTIES, record.id);
+    name = refetched.fields[PROPERTIES_FIELDS.INTERNAL_LISTING_NAME];
+  }
+  return `${name ?? "(name unavailable)"} (${record.id})`;
 }
 
 async function pendingChargeExists(confirmationCode: string): Promise<boolean> {
@@ -101,9 +119,7 @@ async function processOne(email: ParsedBookingEmail, log: RunLogger): Promise<vo
     // was booked - so this genuinely can't be auto-resolved. Never guess: create the
     // record anyway (so staff see it) with Property left blank for them to pick after
     // checking the extranet, same as the other extranet-only fields they already fill in.
-    const candidateNames = propertyMatches
-      .map((m) => `${m.fields[PROPERTIES_FIELDS.INTERNAL_LISTING_NAME] ?? m.id} (${m.id})`)
-      .join(", ");
+    const candidateNames = (await Promise.all(propertyMatches.map(describeProperty))).join(", ");
     await createRecordVerified(TABLES.PENDING_CHARGES, {
       ...baseFields,
       [PENDING_CHARGES_FIELDS.NOTES]: `Hotel ID ${email.hotelId} matches multiple properties - this Booking.com listing likely bundles several units as room types under one hotel_id. Open the extranet booking page to see which unit was actually booked, then set Property manually. Candidates: ${candidateNames}`,
