@@ -89,35 +89,28 @@ function fieldsPersisted(sentFields: Fields, record: AirtableRecord): boolean {
 /**
  * This base's search index lags and writes occasionally don't persist on the first
  * read-back, so every create/update here is re-fetched by record ID until the fields
- * we sent are confirmed present — never trust the write response alone.
+ * we sent are confirmed present — never trust the write response alone. Most writes
+ * verify on the first or second check (near-zero extra cost); backoff only grows for
+ * the rare straggler, so this stays cheap in the common case despite the generous cap.
  */
-export async function createRecordVerified(
-  tableId: string,
-  fields: Fields,
-  opts: { retries?: number; delayMs?: number } = {}
-): Promise<AirtableRecord> {
-  const { retries = 3, delayMs = 1000 } = opts;
+const VERIFY_BACKOFF_MS = [500, 800, 1200, 1800, 2700, 4000];
+
+export async function createRecordVerified(tableId: string, fields: Fields): Promise<AirtableRecord> {
   const created = await createRecordRaw(tableId, fields);
-  for (let attempt = 0; attempt <= retries; attempt++) {
+  for (let attempt = 0; attempt <= VERIFY_BACKOFF_MS.length; attempt++) {
     const fetched = await getRecord(tableId, created.id);
     if (fieldsPersisted(fields, fetched)) return fetched;
-    await sleep(delayMs);
+    await sleep(VERIFY_BACKOFF_MS[attempt] ?? VERIFY_BACKOFF_MS[VERIFY_BACKOFF_MS.length - 1]);
   }
   throw new Error(`Airtable write did not persist after create: table=${tableId} record=${created.id}`);
 }
 
-export async function updateRecordVerified(
-  tableId: string,
-  recordId: string,
-  fields: Fields,
-  opts: { retries?: number; delayMs?: number } = {}
-): Promise<AirtableRecord> {
-  const { retries = 3, delayMs = 1000 } = opts;
+export async function updateRecordVerified(tableId: string, recordId: string, fields: Fields): Promise<AirtableRecord> {
   await updateRecordRaw(tableId, recordId, fields);
-  for (let attempt = 0; attempt <= retries; attempt++) {
+  for (let attempt = 0; attempt <= VERIFY_BACKOFF_MS.length; attempt++) {
     const fetched = await getRecord(tableId, recordId);
     if (fieldsPersisted(fields, fetched)) return fetched;
-    await sleep(delayMs);
+    await sleep(VERIFY_BACKOFF_MS[attempt] ?? VERIFY_BACKOFF_MS[VERIFY_BACKOFF_MS.length - 1]);
   }
   throw new Error(`Airtable write did not persist after update: table=${tableId} record=${recordId}`);
 }
