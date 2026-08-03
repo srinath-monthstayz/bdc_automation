@@ -17,6 +17,7 @@ import {
 import { normalizePhone, isMalformedPhone } from "./phone";
 import { createAllDayBlock, getEvent } from "./googleCalendar";
 import { RunLogger } from "./logger";
+import { Deadline } from "./deadline";
 
 const REQUIRED_PENDING_FIELDS: Array<{ key: string; label: string }> = [
   { key: PENDING_CHARGES_FIELDS.GUEST_NAME, label: "Guest Name" },
@@ -199,11 +200,15 @@ async function processOnePendingCharge(pending: AirtableRecord, log: RunLogger):
 // Called every 5 minutes, right after the Gmail poll. Picks up any pending record
 // staff have ticked "Ready to Create Trip" on (after filling in guest/dates/price and
 // collecting payment by whatever means) and turns it into a real trip + calendar block.
-export async function processReadyPendingCharges(log: RunLogger): Promise<void> {
+export async function processReadyPendingCharges(log: RunLogger, deadline: Deadline): Promise<void> {
   const ready = await listRecords(TABLES.PENDING_CHARGES, {
     filterByFormula: `AND({${PENDING_CHARGES_FIELDS.READY_TO_CREATE_TRIP}} = TRUE(), {${PENDING_CHARGES_FIELDS.STATUS}} != "${CHOICES.PENDING_STATUS_CHARGED}")`,
   });
   for (const pending of ready) {
+    if (deadline.exceeded()) {
+      log.skipped("ready-to-create-trip sweep", "time budget exceeded - remaining pending record(s) left for the next run");
+      break;
+    }
     try {
       await processOnePendingCharge(pending, log);
     } catch (err) {

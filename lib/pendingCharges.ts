@@ -8,6 +8,7 @@ import {
 import { listRecords, createRecordVerified, escapeFormulaString } from "./airtableClient";
 import { fetchNewBookingEmails, markThreadProcessed, ParsedBookingEmail } from "./gmail";
 import { RunLogger } from "./logger";
+import { Deadline } from "./deadline";
 
 async function findPropertyByHotelId(hotelId: string) {
   const matches = await listRecords(TABLES.PROPERTIES, {
@@ -129,9 +130,13 @@ async function processOne(email: ParsedBookingEmail, log: RunLogger): Promise<vo
   });
 }
 
-export async function pollBookingComEmails(log: RunLogger): Promise<void> {
+export async function pollBookingComEmails(log: RunLogger, deadline: Deadline): Promise<void> {
   const emails = await fetchNewBookingEmails();
   for (const email of emails) {
+    if (deadline.exceeded()) {
+      log.skipped("gmail poll", `time budget exceeded - ${emails.length - emails.indexOf(email)} email(s) left for the next run`);
+      break;
+    }
     try {
       await processOne(email, log);
     } catch (err) {

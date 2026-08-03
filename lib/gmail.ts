@@ -70,7 +70,10 @@ async function getOrCreateLabelId(gmail: gmail_v1.Gmail, name: string): Promise<
 export async function fetchNewBookingEmails(): Promise<ParsedBookingEmail[]> {
   const gmail = getGmailClient();
   const query = `${env.GMAIL_QUERY} -label:"${env.GMAIL_LABEL_PROCESSED}"`;
-  const list = await gmail.users.messages.list({ userId: "me", q: query, maxResults: 50 });
+  // Kept small on purpose: each result costs a full messages.get call plus Airtable
+  // work downstream. A large backlog just drains a chunk per 5-minute run instead of
+  // risking a function timeout trying to process everything in one invocation.
+  const list = await gmail.users.messages.list({ userId: "me", q: query, maxResults: 15 });
 
   const results: ParsedBookingEmail[] = [];
   for (const item of list.data.messages ?? []) {

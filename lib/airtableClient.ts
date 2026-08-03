@@ -96,7 +96,7 @@ export async function createRecordVerified(
   fields: Fields,
   opts: { retries?: number; delayMs?: number } = {}
 ): Promise<AirtableRecord> {
-  const { retries = 5, delayMs = 1500 } = opts;
+  const { retries = 3, delayMs = 1000 } = opts;
   const created = await createRecordRaw(tableId, fields);
   for (let attempt = 0; attempt <= retries; attempt++) {
     const fetched = await getRecord(tableId, created.id);
@@ -112,7 +112,7 @@ export async function updateRecordVerified(
   fields: Fields,
   opts: { retries?: number; delayMs?: number } = {}
 ): Promise<AirtableRecord> {
-  const { retries = 5, delayMs = 1500 } = opts;
+  const { retries = 3, delayMs = 1000 } = opts;
   await updateRecordRaw(tableId, recordId, fields);
   for (let attempt = 0; attempt <= retries; attempt++) {
     const fetched = await getRecord(tableId, recordId);
