@@ -34,6 +34,22 @@ async function masterTripAlreadyExists(confirmationCode: string): Promise<boolea
   return matches.length > 0;
 }
 
+const STALE_GRACE_DAYS = 2;
+
+// Booking.com emails don't carry a "created at" signal we can trust for staleness (the
+// mailbox may have years of backlog with no "processed" label yet), so this uses the
+// tentative arrival date instead: a booking whose check-in already passed is historical,
+// not something this automation should ever act on - regardless of whether its
+// property's Hotel ID later gets mapped. Bookings with a future date are never stale,
+// no matter how far out (Booking.com reservations are routinely made a year ahead).
+function isStaleBooking(tentativeArrivalDate: string | null): boolean {
+  if (!tentativeArrivalDate) return false;
+  const cutoff = new Date();
+  cutoff.setUTCDate(cutoff.getUTCDate() - STALE_GRACE_DAYS);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  return tentativeArrivalDate < cutoffStr;
+}
+
 async function processOne(email: ParsedBookingEmail, log: RunLogger): Promise<void> {
   const subject = email.subject;
 
@@ -44,6 +60,15 @@ async function processOne(email: ParsedBookingEmail, log: RunLogger): Promise<vo
   }
   if (await masterTripAlreadyExists(email.confirmationCode)) {
     log.skipped(subject, "duplicate: a Master Trip already references this confirmation code", { confirmationCode: email.confirmationCode });
+    await markThreadProcessed(email.threadId);
+    return;
+  }
+
+  if (isStaleBooking(email.tentativeArrivalDate)) {
+    log.skipped(subject, "historical booking: check-in date is in the past, never creating a pending charge for it, regardless of property mapping", {
+      confirmationCode: email.confirmationCode,
+      tentativeArrivalDate: email.tentativeArrivalDate,
+    });
     await markThreadProcessed(email.threadId);
     return;
   }
