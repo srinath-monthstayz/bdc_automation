@@ -13,7 +13,7 @@ async function findPropertyByHotelId(hotelId: string) {
   const matches = await listRecords(TABLES.PROPERTIES, {
     filterByFormula: `{${PROPERTIES_FIELDS.HOTEL_ID}} = "${escapeFormulaString(hotelId)}"`,
     maxRecords: 5,
-    fields: [PROPERTIES_FIELDS.HOTEL_ID, PROPERTIES_FIELDS.GOOGLE_CALENDAR_ID],
+    fields: [PROPERTIES_FIELDS.HOTEL_ID, PROPERTIES_FIELDS.GOOGLE_CALENDAR_ID, PROPERTIES_FIELDS.INTERNAL_LISTING_NAME],
   });
   return matches;
 }
@@ -86,22 +86,40 @@ async function processOne(email: ParsedBookingEmail, log: RunLogger): Promise<vo
     });
     return; // do not mark processed - self-heals once the user maps the Hotel ID
   }
+
+  const baseFields = {
+    [PENDING_CHARGES_FIELDS.CONFIRMATION_CODE]: email.confirmationCode,
+    [PENDING_CHARGES_FIELDS.GMAIL_THREAD_ID]: email.threadId,
+    [PENDING_CHARGES_FIELDS.STATUS]: CHOICES.PENDING_STATUS_AWAITING_CHARGE,
+    ...(email.tentativeArrivalDate ? { [PENDING_CHARGES_FIELDS.ARRIVAL_DATE]: email.tentativeArrivalDate } : {}),
+  };
+
   if (propertyMatches.length > 1) {
-    log.errored(subject, "property ambiguous: multiple Properties records share this Hotel ID - never guessing", {
+    // Booking.com sometimes bundles several physical units as different "room types"
+    // under one shared hotel_id, and the notification email never says which room type
+    // was booked - so this genuinely can't be auto-resolved. Never guess: create the
+    // record anyway (so staff see it) with Property left blank for them to pick after
+    // checking the extranet, same as the other extranet-only fields they already fill in.
+    const candidateNames = propertyMatches
+      .map((m) => `${m.fields[PROPERTIES_FIELDS.INTERNAL_LISTING_NAME] ?? m.id} (${m.id})`)
+      .join(", ");
+    await createRecordVerified(TABLES.PENDING_CHARGES, {
+      ...baseFields,
+      [PENDING_CHARGES_FIELDS.NOTES]: `Hotel ID ${email.hotelId} matches multiple properties - this Booking.com listing likely bundles several units as room types under one hotel_id. Open the extranet booking page to see which unit was actually booked, then set Property manually. Candidates: ${candidateNames}`,
+    });
+    await markThreadProcessed(email.threadId);
+    log.processed(subject, "created pending record with Property left blank - hotel_id matches multiple properties, staff must pick the correct one from the extranet", {
       confirmationCode: email.confirmationCode,
       hotelId: email.hotelId,
       candidateRecordIds: propertyMatches.map((m) => m.id),
     });
-    return; // do not mark processed - fix the duplicate Hotel ID mapping, then retry
+    return;
   }
 
   const property = propertyMatches[0];
   await createRecordVerified(TABLES.PENDING_CHARGES, {
-    [PENDING_CHARGES_FIELDS.CONFIRMATION_CODE]: email.confirmationCode,
+    ...baseFields,
     [PENDING_CHARGES_FIELDS.PROPERTY]: [property.id],
-    [PENDING_CHARGES_FIELDS.GMAIL_THREAD_ID]: email.threadId,
-    [PENDING_CHARGES_FIELDS.STATUS]: CHOICES.PENDING_STATUS_AWAITING_CHARGE,
-    ...(email.tentativeArrivalDate ? { [PENDING_CHARGES_FIELDS.ARRIVAL_DATE]: email.tentativeArrivalDate } : {}),
   });
   await markThreadProcessed(email.threadId);
   log.processed(subject, "created Booking.com Pending Charges record (Awaiting charge) - arrival date is tentative from the subject line, staff must verify against the extranet page along with guest/price details", {

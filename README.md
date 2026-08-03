@@ -124,5 +124,11 @@ runs via GitHub Actions instead.
   Hotel ID recorded when this was built; every other property's Booking.com `hotel_id`
   needs to be added to its Properties record the first time a booking for it comes in
   (the poller logs exactly which `hotel_id` is unmapped).
+- **One hotel_id can cover multiple units.** Some Booking.com listings bundle several
+  physical villas as different "room types" under one shared `hotel_id`, and the
+  notification email never says which room type was booked. If a `hotel_id` matches more
+  than one Properties record, the pending record is still created (Property left blank)
+  with a note in its **Notes** field explaining why — staff must open the extranet and set
+  Property manually before "Ready to Create Trip" can proceed.
 - **Phone matching is heuristic** (last-9-digits and digits-only comparison), which
   covers common Thai number format differences but isn't a universal E.164 matcher.

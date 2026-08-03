@@ -30,6 +30,7 @@ export const PROPERTIES_FIELDS = {
   HOTEL_ID: "fldK2YUzG0KLZESob",
   GOOGLE_CALENDAR_ID: "flds2Pkaxh2nx4Kjc",
   AIRBNB_NAME: "fldcA6qs3nXsBdoU1",
+  INTERNAL_LISTING_NAME: "fldbGV6PdAkF2Jhpk",
 } as const;
 
 export const CRM_FIELDS = {
@@ -56,6 +57,7 @@ export const PENDING_CHARGES_FIELDS = {
   ACTUAL_AMOUNT_PAID: "fldq384CrhQR6TChS",
   CALENDAR_EVENT_ID: "fldegoX5mtiVd0s5w",
   READY_TO_CREATE_TRIP: "fldndF6zGFFHtxOdp",
+  NOTES: "fldbVJXb8TcLnF8c2",
 } as const;
 
 // singleSelect choice display names (Airtable's REST API writes selects by name, not by choice ID).
